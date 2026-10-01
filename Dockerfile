@@ -59,6 +59,9 @@ ENV PYTHONUNBUFFERED=1
 ENV ARTEMIS_APP_DIR=/app
 ENV PORT=8080
 
+# Model config for managed deployments (ARTEMIS_MANAGED=1); see docs/managed.md.
+COPY config/artemis.managed.jsonc /app/config/artemis.managed.jsonc
+
 EXPOSE 8080
 
 # The console has no user authentication: publish the port to loopback only,

@@ -19,6 +19,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from artemis.core.diagnostics import readiness_engine
+from artemis.managed import is_managed
+from artemis.managed.server import check_run_request
 from artemis.runtime import DeviceExecutionLock, device_pool
 
 try:
@@ -68,6 +70,11 @@ async def get_task_catalog():
 
 @router.post("/api/run")
 async def run_task(request: RunRequest):
+    if is_managed():
+        refusal = check_run_request(request.model_dump(exclude_unset=True))
+        if refusal:
+            raise HTTPException(status_code=403, detail=refusal)
+
     incoming_goals = []
     if request.goals:
         incoming_goals = request.goals

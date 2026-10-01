@@ -230,10 +230,10 @@ async def get_action_session(ctx: Any, actuator: Any = None) -> ActionSession:
         except Exception:
             logger.debug("Closing a dead action session failed; replacing it anyway.")
 
+    from artemis.managed.guard import default_actuator
     from artemis.mcp.action_server import build_action_server
-    from artemis.mcp.actuators.adb import AdbActuator
 
-    actuator = actuator or getattr(ctx, "actuator", None) or AdbActuator(ctx)
+    actuator = actuator or getattr(ctx, "actuator", None) or default_actuator(ctx)
     server = build_action_server(actuator)
     session = ActionSession(server)
     await session.start()

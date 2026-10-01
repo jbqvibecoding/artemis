@@ -53,6 +53,7 @@ from artemis.llm.reliability import (
     retry_policy_for,
 )
 from artemis.llm.router import ModelEndpoint, ModelFactory, ModelProvider
+from artemis.managed.settings import ManagedSettings, is_managed
 from artemis.services.token_meter import record_llm_usage
 from artemis.llm.structured import (
     ParseFailure,
@@ -880,6 +881,17 @@ def get_google_llm(
     include_thoughts: bool | None = None,
     enable_grounding: bool = False,
 ) -> BaseChatModel:
+    if is_managed():
+        # Managed deployments hold no provider keys: helpers wired to Gemini
+        # use the gateway's utility model instead.
+        return ModelFactory.create_model(
+            ModelEndpoint(
+                provider=ModelProvider.OPENAI,
+                model_name=ManagedSettings.from_env().utility_model,
+                temperature=temperature or 0.0,
+                timeout_seconds=timeout or 60.0,
+            )
+        )
     ep = ModelEndpoint(
         provider=ModelProvider.GOOGLE,
         model_name=model_name,
