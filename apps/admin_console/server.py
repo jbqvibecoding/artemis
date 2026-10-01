@@ -49,6 +49,8 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse, HTMLResponse
 import uvicorn
 
+from artemis.managed import is_managed
+from artemis.managed.server import install as install_managed_api
 from artemis.runtime import (
     DeviceExecutionLock,
     clear_server_info,
@@ -116,6 +118,10 @@ app.state.lifecycle_token = LIFECYCLE_TOKEN
 # exist at all; the boundary middleware rejects cross-origin browser traffic
 # and unrecognized Host headers (DNS rebinding) instead.
 app.add_middleware(SameOriginBoundaryMiddleware)
+
+if is_managed():
+    # Outermost: token and route allowlist come before anything else.
+    install_managed_api(app)
 
 
 async def on_startup():

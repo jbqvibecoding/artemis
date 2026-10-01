@@ -65,6 +65,7 @@ from artemis.controllers.controller_factory import get_controller
 from artemis.data_engine.trace import DataEngineCallbackHandler
 from artemis.graph.graph import get_graph
 from artemis.graph.state import State
+from artemis.managed.settings import MANAGED_PROFILE, is_managed
 from artemis.runtime import DeviceExecutionLock
 from artemis.sdk.run_outcome import attach_test_summary, resolve_trace_suffix
 from artemis.sdk.types.agent import AgentConfig
@@ -396,6 +397,10 @@ class AgentBase:
     ) -> str | dict | TOutput | None:
         if not self._initialized:
             raise AgentNotInitializedError()
+
+        if is_managed() and (request.profile or "").lower() != MANAGED_PROFILE:
+            # Other profiles carry raw adb shell tools that bypass the app guard.
+            raise AgentError(f"Managed deployments run only the '{MANAGED_PROFILE}' profile.")
 
         if request.profile:
             agent_profile = self._config.agent_profiles.get(request.profile)

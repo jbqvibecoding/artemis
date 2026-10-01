@@ -1,0 +1,67 @@
+{
+  // ==============================================================================
+  // Managed deployment config (ARTEMIS_MANAGED=1, ARTEMIS_ARTEMIS_JSONC=<this file>)
+  // ==============================================================================
+  // Every model call goes to an OpenAI-compatible gateway (OPENAI_BASE_URL,
+  // OPENAI_API_KEY = a per-user gateway key); the deployment holds no provider
+  // keys. Model names are gateway aliases. Helpers that are hard-wired to Gemini
+  // elsewhere (step summaries, memory capsules) use ARTEMIS_MANAGED_UTILITY_MODEL
+  // (default "artemis-flash-lite") in managed mode.
+
+  "default": {
+    "provider": "openai",
+    "model": "artemis-flash",
+    "fallback": {
+      "provider": "openai",
+      "model": "artemis-flash-lite"
+    }
+  },
+
+  "nodes": {
+    // Visual grounding for ask_explorer (Flash tier): needs a model trained for
+    // point/box output, e.g. a Gemini ER model behind this alias.
+    "object_detector": {
+      "model": "artemis-detector",
+      "fallback": { "provider": "openai", "model": "artemis-flash" }
+    },
+    "hopper": {
+      "model": "artemis-flash-lite",
+      "fallback": { "provider": "openai", "model": "artemis-flash" }
+    }
+  },
+
+  "agent": {
+    "flash": {
+      // Bounded: a runaway loop costs the user's model budget.
+      "max_turns": 100,
+      "explorer_mode": "flash",
+      "step_summarizer": {
+        "enabled": true,
+        "prune_history_xml": true
+      }
+    },
+    "memory": {
+      "chunking": {
+        "model": "artemis-flash-lite"
+      }
+    },
+    // Screen recording needs scrcpy and the native Gemini Files API.
+    "video_analyzer": {
+      "enabled": false,
+      "enable_ledger": false
+    },
+    "pro": {
+      "video_analyzer": {
+        "enabled": false,
+        "enable_ledger": false
+      }
+    },
+    "outputter": {
+      "enabled": true,
+      "force_synthesis": false
+    },
+    "explorer": {
+      "default_version": "flash"
+    }
+  }
+}

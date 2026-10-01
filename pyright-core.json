@@ -7,6 +7,7 @@
     "artemis/runtime/adb_endpoint.py",
     "artemis/runtime/process_probe.py",
     "artemis/mcp/action_types.py",
+    "artemis/managed",
     "artemis/data_engine/models.py",
     "artemis/agents/explorer/native_runner.py",
     "artemis/agents/explorer/perception_tools.py",
