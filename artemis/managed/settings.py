@@ -59,6 +59,11 @@ class ManagedSettings:
     #: memory capsules).
     utility_model: str
     config_path: str
+    #: Vision model that checks each committing input (see action_guard.py),
+    #: reached through the same gateway URL and key as every other model.
+    action_guard_model: str = ""
+    model_base_url: str = ""
+    model_api_key: str = ""
 
     @classmethod
     def from_env(cls) -> ManagedSettings:
@@ -72,6 +77,9 @@ class ManagedSettings:
             runtime_token=env.get("ARTEMIS_RUNTIME_TOKEN", ""),
             utility_model=env.get("ARTEMIS_MANAGED_UTILITY_MODEL", "artemis-flash-lite"),
             config_path=env.get("ARTEMIS_ARTEMIS_JSONC", ""),
+            action_guard_model=env.get("ARTEMIS_ACTION_GUARD_MODEL", "").strip(),
+            model_base_url=env.get("OPENAI_BASE_URL", "").strip(),
+            model_api_key=env.get("OPENAI_API_KEY", "").strip(),
         )
 
     def check(self) -> None:
@@ -90,3 +98,13 @@ class ManagedSettings:
                 "ARTEMIS_GUARDED_APPS needs ARTEMIS_CONTROL_PLANE_URL and "
                 "ARTEMIS_RUNTIME_TOKEN to ask the user."
             )
+        if self.action_guard_model:
+            if not (self.model_base_url and self.model_api_key):
+                raise ManagedConfigError(
+                    "ARTEMIS_ACTION_GUARD_MODEL needs OPENAI_BASE_URL and OPENAI_API_KEY."
+                )
+            if not (self.control_plane_url and self.runtime_token):
+                raise ManagedConfigError(
+                    "ARTEMIS_ACTION_GUARD_MODEL needs ARTEMIS_CONTROL_PLANE_URL and "
+                    "ARTEMIS_RUNTIME_TOKEN to ask the user."
+                )

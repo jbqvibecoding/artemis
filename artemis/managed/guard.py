@@ -8,6 +8,13 @@ guarded app (payment, banking) the user must allow the agent first. A grant
 lasts for this run; the control plane may also answer at once from a grant
 the user made permanent. A refusal stops the run.
 
+Outside guarded apps, every input that can commit something (tap, long
+press, swipe, a key other than back and home) is first shown to an
+independent guard model, which only says whether it pays, buys, sends, posts,
+deletes, changes account security or authorizes something
+(``action_guard.py``). If it does, or if the guard cannot tell, the user is
+asked; each such input on its own, and a refusal stops the run.
+
 It also refuses model-written arguments that the ADB driver would splice
 into a device shell command unquoted (key names) or single-quoted (links).
 """
@@ -31,6 +38,7 @@ from PIL import Image
 from artemis.config import read_ipc_port
 from artemis.context import ArtemisContext
 from artemis.drivers.factory import get_driver
+from artemis.managed.action_guard import ActionGuard, InputAction, approval_message
 from artemis.managed.approvals import ApprovalClient
 from artemis.managed.settings import ManagedSettings, is_managed
 from artemis.mcp.action_manifest import ExtensionTool
@@ -102,6 +110,7 @@ class GuardedActuator:
         guarded: tuple[str, ...],
         app_names: dict[str, str] | None = None,
         approvals: ApprovalClient | None,
+        action_guard: ActionGuard | None = None,
         publish: Callable[[str, dict[str, Any]], None] = publish_event,
         cancel: Callable[..., object] = request_cancel,
         retry_delay: float = _FOREGROUND_RETRY_DELAY,
@@ -112,6 +121,7 @@ class GuardedActuator:
         self._guarded = guarded
         self._app_names = app_names or {}
         self._approvals = approvals
+        self._action_guard = action_guard
         self._publish = publish
         self._cancel = cancel
         self._retry_delay = retry_delay
@@ -126,11 +136,25 @@ class GuardedActuator:
             if settings.control_plane_url and settings.runtime_token
             else None
         )
+        action_guard = (
+            ActionGuard(
+                model=settings.action_guard_model,
+                base_url=settings.model_base_url,
+                api_key=settings.model_api_key,
+            )
+            if settings.action_guard_model
+            else None
+        )
+        if action_guard is None:
+            logger.warning(
+                "[Managed] No ARTEMIS_ACTION_GUARD_MODEL: only guarded apps are asked about"
+            )
         return cls(
             inner,
             guarded=settings.guarded_apps,
             app_names=settings.app_names,
             approvals=approvals,
+            action_guard=action_guard,
         )
 
     # ------------------------------------------------------------ contract
@@ -152,17 +176,26 @@ class GuardedActuator:
             package = await driver.get_current_package()
         return package or None
 
-    async def _screenshot(self) -> str | None:
+    async def _raw_screenshot(self) -> str | None:
         try:
-            raw = await self._inner.take_screenshot()
+            return await self._inner.take_screenshot() or None
         except Exception as exc:  # pylint: disable=broad-exception-caught
-            # The screenshot only helps the user decide; ask without it.
-            logger.warning(f"[Managed] No screenshot for the approval: {exc}")
+            logger.warning(f"[Managed] Could not take a screenshot: {exc}")
             return None
+
+    async def _screenshot(self, raw: str | None = None) -> str | None:
+        # The screenshot only helps the user decide; ask without it if need be.
+        raw = raw or await self._raw_screenshot()
         return jpeg_thumbnail(raw) if raw else None
 
-    async def _refusal(self, action: str) -> ActionResult | None:
+    async def _refusal(self, action: str, *inputs: InputAction) -> ActionResult | None:
         """``None`` when ``action`` may run, else the result that replaces it."""
+        refused = await self._app_refusal(action)
+        if refused is not None or not inputs:
+            return refused
+        return await self._judge(action, inputs)
+
+    async def _app_refusal(self, action: str) -> ActionResult | None:
         if not self._guarded:
             return None
         package = await self._foreground_package()
@@ -188,11 +221,69 @@ class GuardedActuator:
             code=ActionCode.UNSUPPORTED,
         )
 
+    async def _judge(self, action: str, inputs: tuple[InputAction, ...]) -> ActionResult | None:
+        """Ask the user first if the guard model finds an input sensitive (or can't tell).
+
+        Every input is judged on its own: allowing one payment does not allow
+        the next.
+        """
+        if self._action_guard is None:
+            return None
+        raw = await self._raw_screenshot()
+        for input_action in inputs:
+            verdict = await self._action_guard.judge(raw, input_action)
+            if verdict.needs_approval:
+                break
+        else:
+            return None
+        message = approval_message(verdict, input_action)
+        status = await self._request(
+            message,
+            kind="action",
+            event={"message": message},
+            screenshot=await self._screenshot(raw),
+        )
+        if status == "approved":
+            logger.info(f"[Managed] User allowed a {verdict.category} step")
+            return None
+        logger.warning(f"[Managed] User did not allow a {verdict.category} step ({status})")
+        return ActionResult.failure(
+            action,
+            "The user did not allow this step; it was not performed. The task has been "
+            "stopped; report it as failed.",
+            code=ActionCode.UNSUPPORTED,
+        )
+
     async def _ask(self, package: str) -> bool:
         name = self._app_names.get(package, package)
+        status = await self._request(
+            f"允许 agent 在「{name}」中操作？",
+            kind="app_access",
+            event={"package": package, "app_name": name},
+            package=package,
+            app_name=name if name != package else None,
+        )
+        allowed = status == "approved"
+        if allowed:
+            logger.info(f"[Managed] Agent allowed in {package} for this run")
+        else:
+            logger.warning(f"[Managed] Agent not allowed in {package} ({status}); stopping")
+        return allowed
+
+    async def _request(
+        self,
+        message: str,
+        *,
+        kind: str,
+        event: dict[str, Any],
+        package: str | None = None,
+        app_name: str | None = None,
+        screenshot: str | None = None,
+    ) -> str:
+        """Ask the user through the control plane; stop the run unless approved."""
         session_id = _session_id(self.ctx)
         if self._approvals is None:
-            logger.error(f"[Managed] No control plane to ask about {package}; refusing")
+            logger.error(f"[Managed] No control plane to ask ({kind}); refusing")
             status = "error"
         else:
             device = getattr(self.ctx, "device", None)
@@ -203,57 +294,52 @@ class GuardedActuator:
                     {
                         "session_id": session_id,
                         "approval_id": approval_id,
-                        "package": package,
-                        "app_name": name,
+                        **event,
                         "requested_at": time.time(),
                     },
                 )
 
             try:
                 status = await self._approvals.request(
-                    f"允许 agent 在「{name}」中操作？",
+                    message,
+                    kind=kind,
                     context=f"artemis:{session_id or 'unknown'}",
                     device_id=getattr(device, "device_id", None),
                     package=package,
-                    app_name=name if name != package else None,
-                    screenshot=await self._screenshot(),
+                    app_name=app_name,
+                    screenshot=screenshot if screenshot is not None else await self._screenshot(),
                     on_created=on_created,
                 )
             except Exception:  # pylint: disable=broad-exception-caught
                 # e.g. a malformed reply: refuse like any other error.
                 logger.error(
-                    f"[Managed] Approval request for {package} crashed; refusing", exc_info=True
+                    f"[Managed] Approval request ({kind}) crashed; refusing", exc_info=True
                 )
                 status = "error"
-        allowed = status == "approved"
-        self._publish(
-            "approval_resolved",
-            {"session_id": session_id, "package": package, "app_name": name, "status": status},
-        )
-        if allowed:
-            logger.info(f"[Managed] Agent allowed in {package} for this run")
-        else:
-            logger.warning(f"[Managed] Agent not allowed in {package} ({status}); stopping")
-            if session_id:
-                self._cancel(session_id=session_id, reason=f"app access {status}")
-        return allowed
+        self._publish("approval_resolved", {"session_id": session_id, **event, "status": status})
+        if status != "approved" and session_id:
+            self._cancel(session_id=session_id, reason=f"{kind.replace('_', ' ')} {status}")
+        return status
 
     # ------------------------------------------------------- guarded inputs
 
     async def click_sequence(
         self, points: list[tuple[int, int]], delay_ms: int = 50
     ) -> ActionResult:
-        return await self._refusal("click_sequence") or await self._inner.click_sequence(
+        taps = [InputAction("tap", int(x), int(y)) for x, y in points]
+        return await self._refusal("click_sequence", *taps) or await self._inner.click_sequence(
             points, delay_ms
         )
 
     async def click(self, nx: int, ny: int, times: int = 1, delay_ms: int = 100) -> ActionResult:
-        return await self._refusal("click") or await self._inner.click(nx, ny, times, delay_ms)
+        return await self._refusal(
+            "click", InputAction("tap", int(nx), int(ny))
+        ) or await self._inner.click(nx, ny, times, delay_ms)
 
     async def long_press(self, nx: int, ny: int, duration_ms: int = 1000) -> ActionResult:
-        return await self._refusal("long_press") or await self._inner.long_press(
-            nx, ny, duration_ms
-        )
+        return await self._refusal(
+            "long_press", InputAction("long_press", int(nx), int(ny))
+        ) or await self._inner.long_press(nx, ny, duration_ms)
 
     async def input_text(
         self,
@@ -271,7 +357,10 @@ class GuardedActuator:
         end: tuple[int, int],
         duration_ms: int = 800,
     ) -> ActionResult:
-        return await self._refusal("swipe") or await self._inner.swipe(start, end, duration_ms)
+        swipe = InputAction("swipe", int(start[0]), int(start[1]), end=(int(end[0]), int(end[1])))
+        return await self._refusal("swipe", swipe) or await self._inner.swipe(
+            start, end, duration_ms
+        )
 
     async def press_key(self, key: str) -> ActionResult:
         key_name = str(key)
@@ -281,7 +370,9 @@ class GuardedActuator:
             )
         if key_name.lower() in _NAVIGATION_KEYS:
             return await self._inner.press_key(key_name)
-        return await self._refusal("press_key") or await self._inner.press_key(key_name)
+        return await self._refusal(
+            "press_key", InputAction("key", key=key_name)
+        ) or await self._inner.press_key(key_name)
 
     async def erase_one_char(self) -> ActionResult:
         return await self._refusal("erase_one_char") or await self._inner.erase_one_char()

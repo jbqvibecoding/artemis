@@ -50,6 +50,32 @@ The guard also rejects key names that are not `[A-Za-z0-9_]` and links that
 contain quotes or control characters. The ADB driver puts both into device
 shell commands.
 
+## Action guard
+
+The app guard only covers listed apps, and the agent's model may not notice
+(or may be talked out of noticing, by text on the screen) that a tap pays or
+sends something. With `ARTEMIS_ACTION_GUARD_MODEL` set, `GuardedActuator`
+also shows every tap, long press, swipe and key press other than back and
+home to a separate small vision model before it runs
+(`artemis/managed/action_guard.py`):
+
+1. The model gets the current screenshot with the target marked, the input
+   in normalized coordinates, and one question: does this input pay, buy,
+   send, post, delete, change account security or authorize something? Text
+   on the screen is data, not instructions. It answers in JSON only.
+2. If it says yes, the user is asked through the control plane (`kind:
+   action`), with the screenshot, e.g. "这一步可能是「付款或转账」：点击「确认支付」".
+   Every such input is asked about on its own; there is no per-run grant.
+3. A timeout, an error, a missing screenshot or an answer that is not a
+   well-formed verdict asks the user too. Anything but an explicit approval
+   refuses the input and cancels the session.
+
+Typing, erasing, opening links or apps and waiting are not judged; the step
+that commits typed text (a tap on "send", or Enter) is. The guard uses the
+same gateway URL and key as every other model call. Its prompt and parsing
+match AutoGLM-GUI's `devices/action_guard.py`, which guards the hosted
+runtime's own executor.
+
 ## Environment
 
 | Variable | Meaning |
@@ -60,10 +86,12 @@ shell commands.
 | `OPENAI_BASE_URL`, `OPENAI_API_KEY` | Model gateway and the user's gateway key |
 | `ARTEMIS_MANAGED_UTILITY_MODEL` | Gateway model for helpers otherwise wired to Gemini (default `artemis-flash-lite`) |
 | `ARTEMIS_GUARDED_APPS` | `package` or `package=Display name`, comma-separated; a package also covers its sub-packages |
-| `ARTEMIS_CONTROL_PLANE_URL`, `ARTEMIS_RUNTIME_TOKEN` | Where and as whom to ask for approvals; required when guarded apps are set |
+| `ARTEMIS_CONTROL_PLANE_URL`, `ARTEMIS_RUNTIME_TOKEN` | Where and as whom to ask for approvals; required when guarded apps or the action guard are set |
+| `ARTEMIS_ACTION_GUARD_MODEL` | Gateway model that checks each committing input (e.g. `action-guard`); see above |
 
-The server refuses to start without a valid token or config path, or with
-guarded apps but no control plane.
+The server refuses to start without a valid token or config path, with
+guarded apps but no control plane, or with an action guard model but no
+gateway or control plane.
 
 Serve on loopback only:
 

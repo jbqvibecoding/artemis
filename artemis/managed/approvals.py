@@ -65,13 +65,15 @@ class ApprovalClient:
         app_name: str | None = None,
         screenshot: str | None = None,
         on_created: Callable[[str], None] | None = None,
+        kind: str = "app_access",
     ) -> str:
-        """Wait for the user to decide on access to ``package``.
+        """Wait for the user to decide: on access to ``package`` (``app_access``)
+        or on one input (``action``).
 
         Returns ``approved``, ``denied``, ``expired`` or ``error``. A standing
         grant the user gave earlier comes back as ``approved`` at once.
         """
-        body: dict[str, Any] = {"kind": "app_access", "message": message, "context": context}
+        body: dict[str, Any] = {"kind": kind, "message": message, "context": context}
         if device_id:
             body["device_id"] = device_id
         if package:
